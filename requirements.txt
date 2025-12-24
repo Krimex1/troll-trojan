@@ -1,0 +1,10 @@
+# Core dependencies for troll-trojan
+numpy>=1.19.0
+opencv-python>=4.5.0
+pyautogui>=0.9.52
+keyboard>=0.13.5
+pynput>=1.7.3
+psutil>=5.8.0
+
+# Optional for GUI features
+pillow>=8.0.0
