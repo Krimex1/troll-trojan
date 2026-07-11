@@ -1,9 +1,0 @@
-pyautogui
-keyboard
-pynput
-psutil
-numpy
-opencv-python-headless
-mss
-flask
-pyinstaller
